@@ -28,8 +28,12 @@ Step-by-step to get Keycloak issuing tokens that Oathkeeper can introspect. Adju
 - Enable `Client authentication` = ON; `Service accounts roles` = ON.
 - Save → Credentials tab: copy the `Client secret`.
 - Service accounts tab → Assign role → realm-management → add `view-clients` (and optionally `view-users` / `view-realm` or `uma_protection` to avoid 403 on introspection).
-- Build the Basic auth header for Oathkeeper: `Authorization: Basic base64("oathkeeper-introspector:<CLIENT_SECRET>")`.
-  - Replace this value in `oathkeeper/config.yaml` and `oathkeeper/rules.yaml`, then restart `oathkeeper` and `envoy`.
+- In `oathkeeper/config.yaml`, set:
+  - `authenticators.oauth2_introspection.config.pre_authorization.client_id` = `oathkeeper-introspector`
+  - `authenticators.oauth2_introspection.config.pre_authorization.client_secret` = `<CLIENT_SECRET>`
+  - `authenticators.oauth2_introspection.config.pre_authorization.token_url` = `http://keycloak:8080/realms/demo/protocol/openid-connect/token`
+  - `authenticators.oauth2_introspection.config.introspection_request_headers.accept` = `application/jwt`
+- Oathkeeper will use the client credentials flow to get a bearer token, then call introspection with `Accept: application/jwt` to receive Keycloak’s full JWT.
 
 ## 5) Test user
 
@@ -50,13 +54,13 @@ Step-by-step to get Keycloak issuing tokens that Oathkeeper can introspect. Adju
 
 ## 7) Call through Envoy (goes to graphql-faker)
 
-- Ensure Oathkeeper configs use the real Basic auth header, then:
+- Ensure `oathkeeper/config.yaml` has the correct `pre_authorization` client credentials and `Accept: application/jwt`, then:
 
   ```bash
   curl -X POST http://localhost:8080/graphql -H "Authorization: Bearer <ACCESS_TOKEN>" -H "Content-Type: application/json" -d "{\'query\': \'{ __typename }\'}" -v
   ```
 
-  Envoy → Oathkeeper for ext_authz → Keycloak introspection → Oathkeeper issues phantom token → GraphQL Faker sees the internal token/headers.
+  Envoy → Oathkeeper for ext_authz → Keycloak introspection (`Accept: application/jwt`) → Oathkeeper rewrites `Authorization` with the Keycloak full JWT (short-lived phantom token) → GraphQL Faker sees the internal token/headers.
 
 ## Notes
 

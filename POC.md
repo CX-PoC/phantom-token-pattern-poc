@@ -13,7 +13,7 @@ Below is a concrete way to realize your phantom-token gateway with Docker + Dock
 - Envoy as edge/API gateway
 - Envoy `ext_authz` → Ory Oathkeeper (Decision API)
 - Oathkeeper → Keycloak (introspection)
-- Oathkeeper mints an internal JWT and forwards that to the backend
+- Oathkeeper requests the full JWT from Keycloak (`Accept: application/jwt`) and forwards that JWT (re-signed for ~30s via `id_token`) as the phantom token to the backend
 - Backend = `graphql-faker` as your dummy GraphQL API
 
 I’ll start with the target flow, then give you a suggested `docker-compose.yml`, followed by Envoy and Oathkeeper configs, and finally Keycloak setup notes.
@@ -38,13 +38,13 @@ Client (SPA / Native App / Bot)
   v
 [ Ory Oathkeeper ]
   |
-  | 5. Introspects token with Keycloak (OAuth2 token introspection)
-  | 6. If active, mints internal JWT (phantom token) with claims
+  | 5. Introspects token with Keycloak (OAuth2 token introspection), using Accept: application/jwt to get full JWT
+  | 6. If active, return Keycloak introspected full JWT back to Envoy as phantom token
   | 7. Returns decision + mutated headers (e.g. new Authorization header)
   v
 [ Envoy forwards to backend ]
   |
-  | 8. Backend receives request with internal JWT (or user headers)
+  | 8. Backend receives request with Keycloak full JWT (or user headers)
   v
 [ GraphQL Faker (backend) ]
 ```
@@ -55,8 +55,8 @@ Client (SPA / Native App / Bot)
 - Gateway (Envoy + Oathkeeper) is the only component that:
   - understands that token
   - introspects it
-  - mints an **internal JWT** (the “phantom token”)
-- _Internal_ token seen by the backend = JWT minted by Oathkeeper.
+  - rewrites `Authorization` with the introspected Keycloak JWT (requested with `Accept: application/jwt` and re-signed for ~30s via `id_token`)
+- _Internal_ token seen by the backend = the Keycloak JWT (or its short-lived re-signed copy), never the opaque access token.
 
 This keeps your backend simple and decoupled from the IdP.
 
@@ -73,8 +73,8 @@ We’ll use one Docker network, e.g. `mesh`, and four services:
 2. **Ory Oathkeeper**
    - Runs in **decision mode** (no proxy).
    - Accepts `ext_authz` calls from Envoy.
-   - Uses `oauth2_introspection` handler against Keycloak.
-   - Uses `id_token` mutator (or `header` mutator as a simpler alternative) to produce the phantom token.
+   - Uses `oauth2_introspection` handler against Keycloak with `Accept: application/jwt` and client-credentials pre-authorization to fetch the full Keycloak JWT.
+   - Re-signs that JWT for ~30s via the `id_token` mutator (or switch to the `header` mutator if you only want contextual headers) before sending it back as the phantom token.
 
 3. **Envoy**
    - Public edge API gateway (`localhost:8080`).
@@ -298,6 +298,18 @@ access_rules:
 authenticators:
   oauth2_introspection:
     enabled: true
+    config:
+      introspection_url: http://keycloak:8080/realms/demo/protocol/openid-connect/token/introspect
+      introspection_request_headers:
+        accept: application/jwt
+      pre_authorization:
+        enabled: true
+        client_id: oathkeeper-introspector
+        client_secret: <CLIENT_SECRET>
+        token_url: http://keycloak:8080/realms/demo/protocol/openid-connect/token
+      cache:
+        enabled: false # enable in prod
+        ttl: 20s
 
 authorizers:
   allow:
@@ -306,6 +318,16 @@ authorizers:
 mutators:
   id_token:
     enabled: true
+    config:
+      issuer_url: http://oathkeeper:4456/
+      jwks_url: file:///etc/oathkeeper/jwks.json
+      ttl: 30s
+      claims: >
+        {
+          "aud": ["graphql-backend"],
+          "preferred_username": "{{ .Extra.preferred_username }}",
+          "scope": "{{ .Extra.scope }}"
+        }
   header:
     enabled: true
 
@@ -319,52 +341,33 @@ This rule protects `/graphql` and applies the phantom-token behavior.
 
 You have two options:
 
-- **Option A (full phantom-token)** – use `id_token` mutator to mint a new JWT and overwrite `Authorization`.
+- **Option A (full phantom-token)** – use `id_token` mutator to re-sign the introspected Keycloak JWT (fetched with `Accept: application/jwt` via client-credentials pre-authorization) for ~30s and overwrite `Authorization`.
 - **Option B (simpler for demo)** – use `header` mutator to add headers like `X-User-Id`, leaving the original token as-is.
 
 I’ll show Option A (phantom token) and note the simple one.
 
 ```yaml
-- id: graphql-api
+- id: graphql-phantom-token
   upstream:
     preserve_host: true
     url: http://graphql-faker:9002
   match:
-    url: <http|https>://envoy:8080/graphql<.*>
+    url: <http|https>://<\w+>:<\d+>/graphql<.*>
     methods:
       - GET
       - POST
   authenticators:
     - handler: oauth2_introspection
-      config:
-        introspection_url: http://keycloak:8080/realms/demo/protocol/openid-connect/token/introspect
-        introspection_request_headers:
-          # For example, use client credentials of a dedicated introspection client
-          Authorization: "Basic base64(client_id:client_secret)"
   authorizer:
     handler: allow
   mutators:
     - handler: id_token
-      config:
-        # The issuer URL for the phantom token
-        issuer_url: http://oathkeeper:4456/
-        # Optional audience you want your backends to check
-        audiences:
-          - graphql-backend
-        # Map claims from introspection result into JWT
-        claims:
-          sub: "{{ .Subject }}"
-          scope: "{{ .Extra.scope }}"
-          preferred_username: "{{ .Extra.preferred_username }}"
-        # Provide keys for signing the id_token (phantom token)
-        jwks_url: file:///etc/oathkeeper/jwks.json
-        # By default, the mutator will set Authorization: Bearer <id_token>
 ```
 
 Notes:
 
-- `introspection_url` points to Keycloak Introspection endpoint for realm `demo`. Adjust realm name as needed.
-- `Authorization: "Basic ..."` should be the credentials of a **confidential client in Keycloak** that has permission to introspect tokens.
+- `introspection_url` points to Keycloak Introspection endpoint for realm `demo`; it is now set globally in `config.yaml` along with `Accept: application/jwt` and client-credentials pre-authorization so Keycloak returns its full JWT.
+- The regex match accepts any host/port while you iterate locally; tighten it when you know your final hostnames.
 - `match.url` is a regex-style matcher. In decision mode you’re not proxying, Envoy is. The important thing: method + original URL must match what Oathkeeper expects.
 
 **Simpler demo variant (no JWT, just headers)**:
@@ -394,14 +397,13 @@ In Keycloak, you want:
    - In newer Keycloak versions you can set **Access Token Format = Opaque** at the client level.
    - This makes the `access_token` a random opaque string stored server-side.
 3. **Introspection client** for Oathkeeper (e.g. `oathkeeper-introspector`):
-   - Client type: confidential.
-   - Allow service accounts.
-   - Copy its `client_secret`.
+   - Client type: confidential; enable service accounts.
+   - Use its client credentials in `oathkeeper/config.yaml` under `pre_authorization` so Oathkeeper can fetch a token before calling introspection.
    - Give a suitable role or configure it so it can introspect tokens of your realm.
 4. **Token Introspection endpoint**:
    - URL used in Oathkeeper:  
      `http://keycloak:8080/realms/demo/protocol/openid-connect/token/introspect`
-   - Oathkeeper will use HTTP Basic auth with the `oathkeeper-introspector` credentials to hit this.
+   - Oathkeeper sends `Accept: application/jwt` and authenticates with the bearer token obtained from the `pre_authorization` client credentials.
 
 **Flow validation:**
 
@@ -433,7 +435,7 @@ Once `docker-compose up` is running:
    - Envoy logs show calls to `oathkeeper:4456/decisions`.
    - Oathkeeper logs show introspection calls to `keycloak:8080`.
    - Backend (`graphql-faker`) receives the call with either:
-     - `Authorization: Bearer <phantom_jwt_from_oathkeeper>` (if using `id_token`), or
+     - `Authorization: Bearer <Keycloak_full_JWT_re-signed_by_Oathkeeper>` (short-lived, via `id_token`), or
      - something like `X-User-Id` headers (if using header mutator).
 
 That’s your phantom token pattern: the backend never sees the opaque access token.
@@ -772,8 +774,8 @@ not `envoy:8080` (that was wrong in the earlier sketch).
 This is the true “phantom token” pattern:
 
 - Client sends Keycloak token (ideally **lightweight access token**, see §6). ([docs.redhat.com](https://docs.redhat.com/en/documentation/red_hat_build_of_keycloak/26.0/html-single/server_administration_guide/?utm_source=openai))  
-- Oathkeeper introspects against Keycloak.
-- On success, Oathkeeper emits a **new JWT** via `id_token` and overwrites `Authorization: Bearer <phantom-jwt>`.
+- Oathkeeper introspects against Keycloak, sending `Accept: application/jwt` and authenticating via client-credentials pre-authorization.
+- On success, Oathkeeper re-signs the Keycloak JWT via `id_token` (TTL ~30s) and overwrites `Authorization: Bearer <phantom-jwt>`.
 
 `./oathkeeper/rules.yaml` (variant A):
 
@@ -782,7 +784,7 @@ This is the true “phantom token” pattern:
   # Optional explicit version, otherwise Oathkeeper assumes current.
   version: v25.4.0
   match:
-    url: http://oathkeeper:4456/graphql<.*>
+    url: <http|https>://<\w+>:<\d+>/graphql<.*>
     methods:
       - GET
       - POST
@@ -792,11 +794,6 @@ This is the true “phantom token” pattern:
     preserve_host: true
   authenticators:
     - handler: oauth2_introspection
-      config:
-        introspection_url: http://keycloak:8080/realms/demo/protocol/openid-connect/token/introspect
-        introspection_request_headers:
-          # Basic auth using a confidential client that has introspection rights
-          Authorization: "Basic base64(client_id:client_secret)"
   authorizer:
     handler: allow
   mutators:
@@ -804,6 +801,7 @@ This is the true “phantom token” pattern:
       config:
         issuer_url: http://oathkeeper:4456/
         jwks_url: file:///etc/oathkeeper/jwks.json
+        ttl: 30s
         # Phantom access token audience your backend might check
         claims: >
           {
@@ -815,6 +813,7 @@ This is the true “phantom token” pattern:
 
 Notes:
 
+- `introspection_url`, `Accept: application/jwt`, and the client-credentials `pre_authorization` live in `config.yaml`; the rule just references the authenticator by name.
 - `jwks_url` is the modern way to supply signing keys; local filesystem `file:///...` is supported. ([ory.sh](https://www.ory.sh/docs/oathkeeper/pipeline/mutator?utm_source=openai))  
 - Generate keys with (run once):
 
@@ -841,7 +840,7 @@ This is the lower-friction variant:
 - id: graphql-header-context
   version: v25.4.0
   match:
-    url: http://oathkeeper:4456/graphql<.*>
+    url: <http|https>://<\w+>:<\d+>/graphql<.*>
     methods:
       - GET
       - POST
@@ -850,10 +849,6 @@ This is the lower-friction variant:
     preserve_host: true
   authenticators:
     - handler: oauth2_introspection
-      config:
-        introspection_url: http://keycloak:8080/realms/demo/protocol/openid-connect/token/introspect
-        introspection_request_headers:
-          Authorization: "Basic base64(client_id:client_secret)"
   authorizer:
     handler: allow
   mutators:
@@ -903,7 +898,7 @@ Configuration steps in Keycloak admin (high level):
 2. Create public client for SPA/native: `frontend`.
 3. Create confidential client for Oathkeeper: `oathkeeper-introspector` with a client secret and permission to introspect tokens.
 4. Turn on **lightweight access token** for `frontend` using client policies (`use-lightweight-access-token` executor). ([docs.redhat.com](https://docs.redhat.com/en/documentation/red_hat_build_of_keycloak/26.0/html-single/server_administration_guide/?utm_source=openai))  
-5. In Oathkeeper rule, set `introspection_url` and `Authorization: "Basic base64(oathkeeper-introspector:secret)"`.
+5. In Oathkeeper config, set `introspection_url`, `introspection_request_headers.accept: application/jwt`, and the `pre_authorization` client credentials (`oathkeeper-introspector` / secret) so introspection returns the Keycloak JWT.
 
 ---
 

@@ -12,8 +12,8 @@ Based on:
 Problems:
 
 - authkeeper need strict host, can it be wildcarded?
-- need to hardcode base64ed client secret in config.yaml/rules.yaml, can it be from anywhere else?
+- need to hardcode client secret in config.yaml/rules.yaml, can it be from anywhere else?
 
 Current Stuck issue:
 
-- Stuck at "access token is not active" error from Keycloak introspection endpoint
+- Stuck at "access token is not active" at the authkeeper to Keycloak introspection endpoint
