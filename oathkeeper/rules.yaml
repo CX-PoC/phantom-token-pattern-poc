@@ -1,0 +1,33 @@
+- id: graphql-phantom-token
+  # Optional explicit version, otherwise Oathkeeper assumes current.
+  version: v25.4.0
+  match:
+    url: http://oathkeeper:4456/graphql<.*>
+    methods:
+      - GET
+      - POST
+  # Upstream is unused by Decision API but harmless to keep for documentation.
+  upstream:
+    url: http://graphql-faker:9002
+    preserve_host: true
+  authenticators:
+    - handler: oauth2_introspection
+      config:
+        introspection_url: http://keycloak:8080/realms/demo/protocol/openid-connect/token/introspect
+        introspection_request_headers:
+          # Basic auth using a confidential client that has introspection rights
+          Authorization: "Basic base64(client_id:client_secret)"
+  authorizer:
+    handler: allow
+  mutators:
+    - handler: id_token
+      config:
+        issuer_url: http://oathkeeper:4456/
+        jwks_url: file:///etc/oathkeeper/jwks.json
+        # Phantom access token audience your backend might check
+        claims: >
+          {
+            "aud": ["graphql-backend"],
+            "preferred_username": "{{ .Extra.preferred_username }}",
+            "scope": "{{ .Extra.scope }}"
+          }

@@ -1,0 +1,39 @@
+log:
+  level: debug
+  format: text
+
+serve:
+  proxy:
+    port: 4455
+    host: 0.0.0.0
+  api:
+    port: 4456
+    host: 0.0.0.0
+
+access_rules:
+  matching_strategy: regexp
+  repositories:
+    - file:///etc/oathkeeper/rules.yaml
+
+authenticators:
+  oauth2_introspection:
+    enabled: true
+
+authorizers:
+  allow:
+    enabled: true
+
+mutators:
+  id_token:
+    enabled: true
+  header:
+    enabled: true
+
+errors:
+  fallback:
+    - json
+  handlers:
+    json:
+      enabled: true
+      config:
+        verbose: true

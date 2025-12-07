@@ -1,0 +1,56 @@
+version: "3.9"
+
+services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.4
+    command: >
+      start-dev
+      --http-port=8080
+      --hostname-strict=false
+    environment:
+      # New bootstrap env vars (KEYCLOAK_ADMIN* are deprecated in 26.x)
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+    ports:
+      - "8081:8080"   # Keycloak UI at http://localhost:8081
+    networks:
+      - mesh
+
+  oathkeeper:
+    image: oryd/oathkeeper:v25
+    # ENTRYPOINT is "oathkeeper"; we just pass args:
+    command: ["serve", "--config", "/etc/oathkeeper/config.yaml"]
+    volumes:
+      - ./oathkeeper/config.yaml:/etc/oathkeeper/config.yaml:ro
+      - ./oathkeeper/rules.yaml:/etc/oathkeeper/rules.yaml:ro
+      - ./oathkeeper/jwks.json:/etc/oathkeeper/jwks.json:ro
+    ports:
+      - "4456:4456"   # Oathkeeper API (Decision API + health + JWKS)
+      # (You could expose 4455 if you ever use it as reverse proxy)
+    networks:
+      - mesh
+
+  envoy:
+    image: envoyproxy/envoy:v1.36-latest
+    command: ["envoy", "-c", "/etc/envoy/envoy.yaml", "--log-level", "info"]
+    volumes:
+      - ./envoy/envoy.yaml:/etc/envoy/envoy.yaml:ro
+    ports:
+      - "8080:8080"   # Public API gateway entrypoint
+    depends_on:
+      - oathkeeper
+      - graphql-faker
+    networks:
+      - mesh
+
+  graphql-faker:
+    image: apisguru/graphql-faker:latest
+    # Default port is 9002 per official README; no need for extra flags.
+    ports:
+      - "9002:9002"
+    networks:
+      - mesh
+
+networks:
+  mesh:
+    driver: bridge

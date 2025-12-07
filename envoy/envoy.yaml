@@ -1,0 +1,79 @@
+static_resources:
+  listeners:
+    - name: listener_http
+      address:
+        socket_address:
+          address: 0.0.0.0
+          port_value: 8080
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: ingress_http
+                route_config:
+                  name: local_route
+                  virtual_hosts:
+                    - name: backend
+                      domains: ["*"]
+                      routes:
+                        - match:
+                            prefix: "/graphql"
+                          route:
+                            cluster: graphql-backend
+                http_filters:
+                  - name: envoy.filters.http.ext_authz
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthz
+                      transport_api_version: V3
+                      # NEW: use top-level allowed_headers (non-deprecated)
+                      allowed_headers:
+                        patterns:
+                          - exact: authorization
+                          - exact: x-request-id
+                      with_request_body:
+                        max_request_bytes: 8192
+                        allow_partial_message: true
+                      http_service:
+                        server_uri:
+                          uri: http://oathkeeper:4456
+                          cluster: ext_authz
+                          timeout: 0.25s
+                        path_prefix: /decisions
+                        # No need for nested authorization_request.allowed_headers here
+                        authorization_response:
+                          allowed_upstream_headers:
+                            patterns:
+                              - exact: authorization   # Phantom token
+                              - exact: x-user-id      # Option B
+                              - exact: x-user-roles   # Option B
+                  - name: envoy.filters.http.router
+
+  clusters:
+    - name: ext_authz
+      connect_timeout: 0.25s
+      type: LOGICAL_DNS
+      lb_policy: ROUND_ROBIN
+      load_assignment:
+        cluster_name: ext_authz
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: oathkeeper
+                      port_value: 4456
+
+    - name: graphql-backend
+      connect_timeout: 0.25s
+      type: LOGICAL_DNS
+      lb_policy: ROUND_ROBIN
+      load_assignment:
+        cluster_name: graphql-backend
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: graphql-faker
+                      port_value: 9002
