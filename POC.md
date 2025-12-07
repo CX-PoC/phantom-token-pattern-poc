@@ -469,3 +469,512 @@ To go from “brainstorm” to a ready-to-run repo, a couple of clarifications w
 3. **Do you plan to have multiple backends behind Envoy**, each with slightly different authz rules, or is everything behind one GraphQL API for now?
 
 If you answer those, I can tighten the configs (e.g., add concrete `jwks.json`, an example Keycloak realm export, and a more detailed Oathkeeper `rules.yaml` tailored to your use case).
+
+# Updated Plan for Phantom Token Pattern PoC
+
+Below is an updated version of the plan that:
+
+- Pins each component to a **current GA/stable version** as of December 2025
+- Avoids **deprecated configuration knobs**
+- Keeps **two Oathkeeper rule variants** (phantom-token `id_token` vs simple `header` mutator)
+
+I’ll flag the main changes vs the earlier sketch as we go.
+
+---
+
+## 1. Versions to Target (GA / Stable as of Dec 2025)
+
+Based on current docs and release trackers:
+
+- **Envoy**
+  - Stable branches: 1.33–1.36; newest stable: **1.36.2**. ([endoflife.date](https://endoflife.date/envoy?utm_source=openai))  
+  - Docker pattern: `envoyproxy/envoy:v1.36.2` or `envoyproxy/envoy:v1.36-latest`. ([envoyproxy.io](https://www.envoyproxy.io/docs/envoy/latest/start/install.html?utm_source=openai))  
+
+- **Ory Oathkeeper (open source)**  
+  - Latest OSS release: **v25.4.0** (shared version scheme with Ory OSS). ([ory.com](https://www.ory.com/blog/ory-oss-v-25-4-0-launch-recap?utm_source=openai))  
+  - Docker: `oryd/oathkeeper:v25.4.0`. ([ory.com](https://www.ory.com/docs/oathkeeper/install?utm_source=openai))  
+
+- **Keycloak**
+  - Current stable series: **26.4**, latest patch **26.4.7**. ([endoflife.date](https://endoflife.date/keycloak?utm_source=openai))  
+  - Docker (official): `quay.io/keycloak/keycloak:26.4.7`. ([keycloak.org](https://www.keycloak.org/getting-started/getting-started-docker?utm_source=openai))  
+
+- **GraphQL Faker**
+  - Project is essentially “stable” but not very actively developed; the documented Docker usage is still:  
+    `docker run -p=9002:9002 apisguru/graphql-faker [options] [SDL file]`. ([app.unpkg.com](https://app.unpkg.com/graphql-faker%402.0.0-rc.17/files/README.md?utm_source=openai))  
+  - We’ll just use `apisguru/graphql-faker:latest`.
+
+---
+
+## 2. Updated `docker-compose.yml` (version-pinned & non‑deprecated)
+
+Key changes vs last time:
+
+- Use **Envoy 1.36.2**.
+- Use **Oathkeeper v25.4.0** and the modern **`serve.proxy` / `serve.api`** config (no `serve decision` subcommand).
+- Use **Keycloak 26.4.7** and **`KC_BOOTSTRAP_ADMIN_*`** (the old `KEYCLOAK_ADMIN`/`KEYCLOAK_ADMIN_PASSWORD` vars are deprecated). ([keycloak.org](https://www.keycloak.org/docs/26.3.3/upgrading/?utm_source=openai))  
+- Don’t pass unsupported `--open=false` to GraphQL Faker (its `--open` is a flag, and docs explicitly say `--open` doesn’t work in Docker). ([app.unpkg.com](https://app.unpkg.com/graphql-faker%402.0.0-rc.17/files/README.md?utm_source=openai))  
+
+```yaml
+version: "3.9"
+
+services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.4.7
+    command: >
+      start-dev
+      --http-port=8080
+      --hostname-strict=false
+    environment:
+      # New bootstrap env vars (KEYCLOAK_ADMIN* are deprecated in 26.x)
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+    ports:
+      - "8081:8080"   # Keycloak UI at http://localhost:8081
+    networks:
+      - mesh
+
+  oathkeeper:
+    image: oryd/oathkeeper:v25.4.0
+    # ENTRYPOINT is "oathkeeper"; we just pass args:
+    command: ["serve", "--config", "/etc/oathkeeper/config.yaml"]
+    volumes:
+      - ./oathkeeper/config.yaml:/etc/oathkeeper/config.yaml:ro
+      - ./oathkeeper/rules.yaml:/etc/oathkeeper/rules.yaml:ro
+      - ./oathkeeper/jwks.json:/etc/oathkeeper/jwks.json:ro
+    ports:
+      - "4456:4456"   # Oathkeeper API (Decision API + health + JWKS)
+      # (You could expose 4455 if you ever use it as reverse proxy)
+    networks:
+      - mesh
+
+  envoy:
+    image: envoyproxy/envoy:v1.36.2
+    command: ["envoy", "-c", "/etc/envoy/envoy.yaml", "--log-level", "info"]
+    volumes:
+      - ./envoy/envoy.yaml:/etc/envoy/envoy.yaml:ro
+    ports:
+      - "8080:8080"   # Public API gateway entrypoint
+    depends_on:
+      - oathkeeper
+      - graphql-faker
+    networks:
+      - mesh
+
+  graphql-faker:
+    image: apisguru/graphql-faker:latest
+    # Default port is 9002 per official README; no need for extra flags.
+    ports:
+      - "9002:9002"
+    networks:
+      - mesh
+
+networks:
+  mesh:
+    driver: bridge
+```
+
+---
+
+## 3. Envoy `envoy.yaml` — updated for Envoy 1.36, no deprecated fields
+
+Two main points we must get right for Envoy 1.36:
+
+1. Use the **v3 API** and `envoy.filters.http.ext_authz`.  
+2. Avoid the now‑deprecated `authorization_request.allowed_headers` nested field; use the **top‑level** `allowed_headers` in `ExtAuthz` instead.([envoyproxy.io](https://www.envoyproxy.io/docs/envoy/latest/api-v3/extensions/filters/http/ext_authz/v3/ext_authz.proto.html?utm_source=openai))  
+
+Here’s a minimized config that:
+
+- Listens on 8080
+- Routes `/graphql` to `graphql-faker`
+- Calls Oathkeeper Decision API at `http://oathkeeper:4456/decisions/...`
+- Lets Oathkeeper overwrite `Authorization` (+ some extra headers)
+
+```yaml
+static_resources:
+  listeners:
+    - name: listener_http
+      address:
+        socket_address:
+          address: 0.0.0.0
+          port_value: 8080
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: ingress_http
+                route_config:
+                  name: local_route
+                  virtual_hosts:
+                    - name: backend
+                      domains: ["*"]
+                      routes:
+                        - match:
+                            prefix: "/graphql"
+                          route:
+                            cluster: graphql-backend
+                http_filters:
+                  - name: envoy.filters.http.ext_authz
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthz
+                      transport_api_version: V3
+                      # NEW: use top-level allowed_headers (non-deprecated)
+                      allowed_headers:
+                        patterns:
+                          - exact: authorization
+                          - exact: x-request-id
+                      with_request_body:
+                        max_request_bytes: 8192
+                        allow_partial_message: true
+                      http_service:
+                        server_uri:
+                          uri: http://oathkeeper:4456
+                          cluster: ext_authz
+                          timeout: 0.25s
+                        path_prefix: /decisions
+                        # No need for nested authorization_request.allowed_headers here
+                        authorization_response:
+                          allowed_upstream_headers:
+                            patterns:
+                              - exact: authorization   # Phantom token
+                              - exact: x-user-id      # Option B
+                              - exact: x-user-roles   # Option B
+                  - name: envoy.filters.http.router
+
+  clusters:
+    - name: ext_authz
+      connect_timeout: 0.25s
+      type: LOGICAL_DNS
+      lb_policy: ROUND_ROBIN
+      load_assignment:
+        cluster_name: ext_authz
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: oathkeeper
+                      port_value: 4456
+
+    - name: graphql-backend
+      connect_timeout: 0.25s
+      type: LOGICAL_DNS
+      lb_policy: ROUND_ROBIN
+      load_assignment:
+        cluster_name: graphql-backend
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: graphql-faker
+                      port_value: 9002
+```
+
+**Why this is non‑deprecated for 1.36:**
+
+- `ExtAuthz` v3 is the correct API. ([envoyproxy.io](https://www.envoyproxy.io/docs/envoy/latest/api-v3/extensions/filters/http/ext_authz/v3/ext_authz.proto.html?utm_source=openai))  
+- `allowed_headers` on `ExtAuthz` is the new recommended way to limit which request headers go to the auth service. The nested `authorization_request.allowed_headers` is explicitly marked deprecated. ([envoyproxy.io](https://www.envoyproxy.io/docs/envoy/latest/api-v3/extensions/filters/http/ext_authz/v3/ext_authz.proto.html?utm_source=openai))  
+
+---
+
+## 4. Oathkeeper `config.yaml` for v25.4.0 (Decision API mode)
+
+Modern Oathkeeper (including 25.4.0) uses a **single `oathkeeper serve`** command that exposes:
+
+- a **proxy port** (`serve.proxy`)  
+- an **API port** (`serve.api`) — this is where `/decisions` lives. ([ory.sh](https://www.ory.sh/docs/oathkeeper/cli/oathkeeper-serve?utm_source=openai))  
+
+We do *not* use the old `serve decision` CLI subcommand or `serve.decisions` config block.
+
+`./oathkeeper/config.yaml`:
+
+```yaml
+log:
+  level: debug
+  format: text
+
+serve:
+  proxy:
+    port: 4455
+    host: 0.0.0.0
+  api:
+    port: 4456
+    host: 0.0.0.0
+
+access_rules:
+  matching_strategy: regexp
+  repositories:
+    - file:///etc/oathkeeper/rules.yaml
+
+authenticators:
+  oauth2_introspection:
+    enabled: true
+
+authorizers:
+  allow:
+    enabled: true
+
+mutators:
+  id_token:
+    enabled: true
+  header:
+    enabled: true
+
+errors:
+  fallback:
+    - json
+  handlers:
+    json:
+      enabled: true
+      config:
+        verbose: true
+```
+
+This matches the style in the current docs (proxy + api ports, `access_rules.repositories`). ([archive.ory.com](https://archive.ory.com/t/51614/serve-proxy-port-4455-run-the-proxy-at-port-4455-api-port-44?utm_source=openai))  
+
+---
+
+## 5. Oathkeeper `rules.yaml` – two non‑deprecated options
+
+### Important matching detail for Decision API
+
+For the Decision API, you send requests to:
+
+```text
+http://oathkeeper:4456/decisions/<original-path>
+```
+
+Oathkeeper:
+
+- strips the `/decisions` prefix when matching rules;  
+- matches on the **scheme + host + path** as seen by Oathkeeper’s API (or from `X-Forwarded-*` if present). ([ory.com](https://www.ory.com/docs/oathkeeper/?utm_source=openai))  
+
+Given Envoy calls `http://oathkeeper:4456/decisions/graphql`, and we don’t set special `X-Forwarded-*`, Oathkeeper will match against:
+
+```text
+http://oathkeeper:4456/graphql
+```
+
+So your `match.url` should be:
+
+```yaml
+match:
+  url: http://oathkeeper:4456/graphql<.*>
+```
+
+not `envoy:8080` (that was wrong in the earlier sketch).
+
+---
+
+### 5.1 Option A: Full Phantom Token (`id_token` mutator)
+
+This is the true “phantom token” pattern:
+
+- Client sends Keycloak token (ideally **lightweight access token**, see §6). ([docs.redhat.com](https://docs.redhat.com/en/documentation/red_hat_build_of_keycloak/26.0/html-single/server_administration_guide/?utm_source=openai))  
+- Oathkeeper introspects against Keycloak.
+- On success, Oathkeeper emits a **new JWT** via `id_token` and overwrites `Authorization: Bearer <phantom-jwt>`.
+
+`./oathkeeper/rules.yaml` (variant A):
+
+```yaml
+- id: graphql-phantom-token
+  # Optional explicit version, otherwise Oathkeeper assumes current.
+  version: v25.4.0
+  match:
+    url: http://oathkeeper:4456/graphql<.*>
+    methods:
+      - GET
+      - POST
+  # Upstream is unused by Decision API but harmless to keep for documentation.
+  upstream:
+    url: http://graphql-faker:9002
+    preserve_host: true
+  authenticators:
+    - handler: oauth2_introspection
+      config:
+        introspection_url: http://keycloak:8080/realms/demo/protocol/openid-connect/token/introspect
+        introspection_request_headers:
+          # Basic auth using a confidential client that has introspection rights
+          Authorization: "Basic base64(client_id:client_secret)"
+  authorizer:
+    handler: allow
+  mutators:
+    - handler: id_token
+      config:
+        issuer_url: http://oathkeeper:4456/
+        jwks_url: file:///etc/oathkeeper/jwks.json
+        # Phantom access token audience your backend might check
+        claims: >
+          {
+            "aud": ["graphql-backend"],
+            "preferred_username": "{{ .Extra.preferred_username }}",
+            "scope": "{{ .Extra.scope }}"
+          }
+```
+
+Notes:
+
+- `jwks_url` is the modern way to supply signing keys; local filesystem `file:///...` is supported. ([ory.sh](https://www.ory.sh/docs/oathkeeper/pipeline/mutator?utm_source=openai))  
+- Generate keys with (run once):
+
+  ```bash
+  docker run --rm oryd/oathkeeper:v25.4.0 \
+    credentials generate --alg RS256 > ./oathkeeper/jwks.json
+  ```
+
+- Backends can validate this phantom JWT using Oathkeeper’s `/.well-known/jwks.json` on the API port if you expose it.
+
+---
+
+### 5.2 Option B: Simple header mutator (no JWT)
+
+This is the lower-friction variant:
+
+- Oathkeeper still does introspection & authz.
+- Instead of minting JWT, it injects e.g. `X-User-Id` and `X-User-Role` into headers.
+- Envoy forwards these headers; backend does not parse any tokens.
+
+`./oathkeeper/rules.yaml` (variant B instead of A):
+
+```yaml
+- id: graphql-header-context
+  version: v25.4.0
+  match:
+    url: http://oathkeeper:4456/graphql<.*>
+    methods:
+      - GET
+      - POST
+  upstream:
+    url: http://graphql-faker:9002
+    preserve_host: true
+  authenticators:
+    - handler: oauth2_introspection
+      config:
+        introspection_url: http://keycloak:8080/realms/demo/protocol/openid-connect/token/introspect
+        introspection_request_headers:
+          Authorization: "Basic base64(client_id:client_secret)"
+  authorizer:
+    handler: allow
+  mutators:
+    - handler: header
+      config:
+        headers:
+          X-User-Id: "{{ .Subject }}"
+          X-User-Roles: "{{ .Extra.realm_access.roles }}"
+```
+
+Because our Envoy `authorization_response.allowed_upstream_headers` already allows `x-user-id` and `x-user-roles`, these headers flow from Oathkeeper → Envoy → GraphQL Faker.
+
+---
+
+## 6. Keycloak 26.4.7 specifics (lightweight tokens, introspection, env vars)
+
+### 6.1 Env vars for admin account
+
+For Keycloak 26.x, the docs are clear:
+
+- **Deprecated:** `KEYCLOAK_ADMIN`, `KEYCLOAK_ADMIN_PASSWORD`  
+- **Use instead:** `KC_BOOTSTRAP_ADMIN_USERNAME`, `KC_BOOTSTRAP_ADMIN_PASSWORD` ([keycloak.org](https://www.keycloak.org/docs/26.3.3/upgrading/?utm_source=openai))  
+
+We already reflected that in `docker-compose.yml`.
+
+### 6.2 Lightweight access tokens vs “opaque”
+
+Keycloak still issues **JWT** access tokens, but in 26.x you can configure **“lightweight access tokens”** via client policies:
+
+- They strip most PII claims out of the access token.
+- Resource servers can obtain extra info via **introspection**, including an optional `jwt` claim containing a full JWT, when requested with `Accept: application/jwt`. ([keycloak.org](https://www.keycloak.org/securing-apps/oidc-layers?utm_source=openai))  
+
+So from the point of view of this pattern:
+
+- The SPA / native app effectively sees a **lightweight access token** that you can *treat as opaque* (you don’t care about its content and don’t expose it to backends).
+- Oathkeeper uses the **introspection endpoint**:
+
+  ```text
+  http://keycloak:8080/realms/demo/protocol/openid-connect/token/introspect
+  ```
+
+  which is unchanged in 26.x and is the right endpoint to call. ([keycloak.org](https://www.keycloak.org/securing-apps/oidc-layers?utm_source=openai))  
+
+Configuration steps in Keycloak admin (high level):
+
+1. Create realm `demo`.
+2. Create public client for SPA/native: `frontend`.
+3. Create confidential client for Oathkeeper: `oathkeeper-introspector` with a client secret and permission to introspect tokens.
+4. Turn on **lightweight access token** for `frontend` using client policies (`use-lightweight-access-token` executor). ([docs.redhat.com](https://docs.redhat.com/en/documentation/red_hat_build_of_keycloak/26.0/html-single/server_administration_guide/?utm_source=openai))  
+5. In Oathkeeper rule, set `introspection_url` and `Authorization: "Basic base64(oathkeeper-introspector:secret)"`.
+
+---
+
+## 7. GraphQL Faker – Docker usage
+
+The current README (for `graphql-faker@2.0.0-rc.17`) still shows:
+
+```bash
+docker run -p=9002:9002 apisguru/graphql-faker [options] [SDL file]
+```
+
+and explains:
+
+- default port = **9002**  
+- `--open` does **not** work inside Docker. ([app.unpkg.com](https://app.unpkg.com/graphql-faker%402.0.0-rc.17/files/README.md?utm_source=openai))  
+
+So for Compose we:
+
+- Bind 9002
+- Avoid invalid `--open=false` flags
+
+No deprecated config to worry about here; this tool hasn’t changed much recently.
+
+---
+
+## 8. Sanity check of “no deprecated config” claim
+
+Quick recap of deprecations we explicitly avoided or fixed:
+
+- **Envoy 1.36.2**
+  - Uses v3 API for `ext_authz`, which is the stable config surface. ([envoyproxy.io](https://www.envoyproxy.io/docs/envoy/latest/api-v3/extensions/filters/http/ext_authz/v3/ext_authz.proto.html?utm_source=openai))  
+  - Uses **top-level** `allowed_headers` on `ExtAuthz` (the nested `AuthorizationRequest.allowed_headers` is marked deprecated). ([envoyproxy.io](https://www.envoyproxy.io/docs/envoy/latest/api-v3/extensions/filters/http/ext_authz/v3/ext_authz.proto.html?utm_source=openai))  
+
+- **Oathkeeper v25.4.0**
+  - Uses a single `serve` command with `serve.proxy` and `serve.api` sections — no use of the older `serve decision` CLI. ([ory.sh](https://www.ory.sh/docs/oathkeeper/cli/oathkeeper-serve?utm_source=openai))  
+  - Uses the current `access_rules.repositories` format. ([ory.com](https://www.ory.com/docs/oathkeeper/api-access-rules?utm_source=openai))  
+  - `id_token` mutator config (`issuer_url`, `jwks_url`, `claims`) matches current docs. ([ory.sh](https://www.ory.sh/docs/oathkeeper/pipeline/mutator?utm_source=openai))  
+
+- **Keycloak 26.4.7**
+  - Uses `KC_BOOTSTRAP_ADMIN_USERNAME` / `KC_BOOTSTRAP_ADMIN_PASSWORD` instead of deprecated `KEYCLOAK_ADMIN*`. ([keycloak.org](https://www.keycloak.org/docs/26.3.3/upgrading/?utm_source=openai))  
+  - Token endpoints & introspection endpoints are unchanged and valid. ([keycloak.org](https://www.keycloak.org/securing-apps/oidc-layers?utm_source=openai))  
+
+- **GraphQL Faker**
+  - We follow currently documented CLI/Docker usage, avoiding unsupported flags. ([app.unpkg.com](https://app.unpkg.com/graphql-faker%402.0.0-rc.17/files/README.md?utm_source=openai))  
+
+---
+
+## 9. Next steps for you
+
+If you want to go from here to a working prototype:
+
+1. Drop these files into a repo (`docker-compose.yml`, `envoy/envoy.yaml`, `oathkeeper/config.yaml`, `oathkeeper/rules.yaml`, `oathkeeper/jwks.json`).
+2. Generate `jwks.json` as shown above.
+3. Configure Keycloak realm as described and get a token from `frontend`.
+4. Run `docker-compose up` and test:
+
+   ```bash
+   curl -X POST http://localhost:8080/graphql \
+     -H "Authorization: Bearer <keycloak_access_token>" \
+     -H "Content-Type: application/json" \
+     -d '{"query": "{ __typename }"}' -v
+   ```
+
+5. Check that:
+   - Envoy queries Oathkeeper (`/decisions/graphql`).
+   - Oathkeeper introspects at Keycloak’s `/token/introspect`.
+   - Backend sees either:
+     - `Authorization: Bearer <phantom_jwt>` (Option A), or
+     - `X-User-Id`, `X-User-Roles` headers (Option B).
+
+If you want, I can next:
+
+- Add a minimal **“validate phantom JWT in backend”** example (for a Node or Go microservice instead of GraphQL Faker), or
+- Sketch a **Keycloak realm export** with the client policy enabling lightweight access tokens and the introspection client preconfigured.
