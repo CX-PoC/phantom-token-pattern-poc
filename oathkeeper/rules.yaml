@@ -1,6 +1,4 @@
 - id: graphql-phantom-token
-  # Optional explicit version, otherwise Oathkeeper assumes current.
-  version: v25.4.0
   match:
     # Match the original request host/path; Oathkeeper strips /decisions internally
     url: <http|https>://localhost:8080/graphql<.*>

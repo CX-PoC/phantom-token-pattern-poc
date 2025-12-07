@@ -9,8 +9,26 @@ services:
       # New bootstrap env vars (KEYCLOAK_ADMIN* are deprecated in 26.x)
       KC_BOOTSTRAP_ADMIN_USERNAME: admin
       KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://keycloak-db:5432/keycloak
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD: keycloak
     ports:
       - "8081:8080"   # Keycloak UI at http://localhost:8081
+    depends_on:
+      - keycloak-db
+    networks:
+      - mesh
+
+  keycloak-db:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_DB: keycloak
+      POSTGRES_USER: keycloak
+      POSTGRES_PASSWORD: keycloak
+    volumes:
+      # For PostgreSQL 18+, the image volume is /var/lib/postgresql (PGDATA defaults to /var/lib/postgresql/18/docker)
+      - keycloak-db-data:/var/lib/postgresql
     networks:
       - mesh
 
@@ -52,3 +70,5 @@ services:
 networks:
   mesh:
     driver: bridge
+volumes:
+  keycloak-db-data:
