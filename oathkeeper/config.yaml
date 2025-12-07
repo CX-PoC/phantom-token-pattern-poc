@@ -18,6 +18,10 @@ access_rules:
 authenticators:
   oauth2_introspection:
     enabled: true
+    config:
+      introspection_url: http://keycloak:8080/realms/demo/protocol/openid-connect/token/introspect
+      introspection_request_headers:
+        Authorization: "Basic base64(client_id:client_secret)"
 
 authorizers:
   allow:
@@ -26,8 +30,12 @@ authorizers:
 mutators:
   id_token:
     enabled: true
+    config:
+      issuer_url: http://oathkeeper:4456/
+      jwks_url: file:///etc/oathkeeper/jwks.json
+      ttl: 15m
   header:
-    enabled: true
+    enabled: false
 
 errors:
   fallback:

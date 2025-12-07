@@ -26,7 +26,6 @@ static_resources:
                     typed_config:
                       "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthz
                       transport_api_version: V3
-                      # NEW: use top-level allowed_headers (non-deprecated)
                       allowed_headers:
                         patterns:
                           - exact: authorization
@@ -48,6 +47,8 @@ static_resources:
                               - exact: x-user-id      # Option B
                               - exact: x-user-roles   # Option B
                   - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
 
   clusters:
     - name: ext_authz
