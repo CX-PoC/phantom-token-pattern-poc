@@ -21,7 +21,7 @@ authenticators:
     config:
       introspection_url: http://keycloak:8080/realms/demo/protocol/openid-connect/token/introspect
       introspection_request_headers:
-        Authorization: "Basic base64(client_id:client_secret)"
+        Authorization: "Basic b2F0aGtlZXBlci1pbnRyb3NwZWN0b3I6Y09kQnFrR3VHS0lHeGljQUdoWlA3RHhuZkM1QnRLVzI="
 
 authorizers:
   allow:

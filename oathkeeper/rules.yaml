@@ -2,7 +2,8 @@
   # Optional explicit version, otherwise Oathkeeper assumes current.
   version: v25.4.0
   match:
-    url: http://oathkeeper:4456/graphql<.*>
+    # Match the original request host/path; Oathkeeper strips /decisions internally
+    url: <http|https>://localhost:8080/graphql<.*>
     methods:
       - GET
       - POST
@@ -11,12 +12,8 @@
     url: http://graphql-faker:9002
     preserve_host: true
   authenticators:
+    # match the one defined in config.yaml
     - handler: oauth2_introspection
-      config:
-        introspection_url: http://keycloak:8080/realms/demo/protocol/openid-connect/token/introspect
-        introspection_request_headers:
-          # Basic auth using a confidential client that has introspection rights
-          Authorization: "Basic base64(client_id:client_secret)"
   authorizer:
     handler: allow
   mutators:
