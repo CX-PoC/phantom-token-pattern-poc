@@ -1,10 +1,12 @@
 # Brainstorm
 
+```
 [SPA / Native App / bot with API key]
   |
  Envoy ---connect via ext_authz--- ory/oathkeeper -- idp (Keycloak)
   |
  Backend graphql API
+```
 
 # GPT 5.1 Answer
 
