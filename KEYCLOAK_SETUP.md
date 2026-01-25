@@ -20,16 +20,20 @@ Step-by-step to get Keycloak issuing tokens that Oathkeeper can introspect. Adju
 - Web origins: `*` (relax for now).
 - Save.
 
-### 3a) Configure Lightweight Access Tokens (recommended approach)
+### 3a) Configure Lightweight Access Tokens
 
-**Option 1: Simple Toggle** (forces lightweight tokens always)
+**Option 1: Simple Toggle** ✅ **Recommended for targeting specific clients**
 
-- In Advanced settings tab: set `Always Use Lightweight Access Token` to ON.
+- Navigate to `Clients` → `frontend` → `Advanced` tab.
+- Set `Always Use Lightweight Access Token` to **ON**.
 - This applies to all token requests for this client.
+- **Use this when:** You want only specific clients (like `frontend`) to receive lightweight tokens.
 
-**Option 2: Client Policy Executor** (flexible, conditional enforcement)
+**Option 2: Client Policy Executor** (for realm-wide policies)
 
-- More flexible than the toggle - allows clients to request full tokens with a specific scope.
+- Uses Client Policies to enforce lightweight tokens across multiple clients based on conditions.
+- **Use this when:** You want to apply the same policy to many clients at once (e.g., all public clients in the realm).
+- ⚠️ **Warning:** Due to a bug in Keycloak 26, the `client-access-type` condition doesn't work for token requests, making it difficult to target specific client types. See Known Issues section below.
 - See detailed setup in section 3b below.
 
 ### 3b) Client Policy Executor Setup (Advanced)
@@ -41,20 +45,29 @@ This approach uses Keycloak 26's Client Policies to conditionally enforce lightw
 1. Navigate to `Realm Settings` → `Client Policies` tab → `Profiles` sub-tab.
 2. Click `Create client profile` and name it (e.g., `lightweight-token-profile`).
 3. Click on the profile name → `Executors` tab.
-4. Click `Add executor` and select the `limit-claims` executor (or similar executor for lightweight tokens in Keycloak 26).
-   - This executor strips the access token of non-essential claims, making it lightweight.
+4. Click `Add executor` and select the **`use-lightweight-access-token`** executor.
+   - This executor produces opaque/lightweight access tokens instead of full JWTs.
+   - Note: In some Keycloak versions, this may appear as `limit-claims` or similar.
 5. Save the profile.
 
 #### Step 2: Create a Client Policy
 
 1. Go to `Client Policies` → `Policies` sub-tab.
-2. Click `Create client policy`.
+2. Click `Create client policy` and name it (e.g., `lightweight-token-policy`).
 3. Add **Conditions** to define when this policy applies:
-   - **Client ID**: Apply to specific client(s) like `frontend`.
-   - **Client Attribute**: Apply to any client with a specific attribute.
-   - **Requested Scope**: Apply only if a certain scope is NOT present (e.g., enable lightweight tokens unless `scope=full` is requested).
+
+   **Working Conditions:**
+   - ✅ **`any-client`**: Applies to all clients (realm-wide enforcement).
+   - ✅ **`grant-type`**: Apply based on grant types (e.g., `authorization_code`, `password`).
+     - ⚠️ Note: This applies to ALL clients using those grant types, not just specific clients.
+
+   **Broken Conditions (Keycloak 26 Bug):**
+   - ❌ **`client-access-type`** (public/confidential/bearer-only): Does NOT work for token request events.
+     - Even if you set this to `public`, it will not trigger during token requests.
+     - See Known Issues section below for details and workarounds.
+
 4. In the **Profiles** section of the policy, select the profile you created in Step 1 (`lightweight-token-profile`).
-5. Save the policy.
+5. Enable the policy and save.
 
 #### Step 3: Verify Client Settings
 
@@ -62,11 +75,11 @@ This approach uses Keycloak 26's Client Policies to conditionally enforce lightw
    - Ensure `Always Use Lightweight Access Token` toggle under `Clients` → `[Your Client]` → `Advanced` is set to **OFF**.
    - If this toggle is ON, the lightweight token is forced regardless of your policy conditions.
 
-#### Why use the Executor?
+#### Why use Client Policies?
 
-- Ideal for "happy middle ground" scenarios where clients use lightweight tokens by default to save bandwidth.
-- Allows clients to request a "heavy" token (containing all roles and claims) only when they explicitly request a specific scope (e.g., `scope=full`).
-- Provides flexibility without forcing all-or-nothing token formats.
+- **Realm-wide enforcement**: Apply the same lightweight token policy to all clients at once using `any-client` condition.
+- **Grant-type based**: Enforce lightweight tokens for specific grant types (e.g., only `authorization_code` flow).
+- **Not recommended** for targeting specific individual clients due to the `client-access-type` bug - use the Simple Toggle (Option 1) instead.
 
 ## 4) Confidential introspection client `oathkeeper-introspector`
 
@@ -108,6 +121,20 @@ This approach uses Keycloak 26's Client Policies to conditionally enforce lightw
   ```
 
   Envoy → Oathkeeper for ext_authz → Keycloak introspection (`Accept: application/jwt`) → Oathkeeper rewrites `Authorization` with the Keycloak full JWT (short-lived phantom token) → GraphQL Faker sees the internal token/headers.
+
+## Known Issues
+
+### Keycloak 26: `client-access-type` Condition Bug
+
+The `client-access-type` condition in Client Policies **does not work** for token request events, even though the source code suggests it should.
+
+- ❌ Setting `client-access-type` to `public` does NOT apply policies during token requests
+- ✅ Workaround: Use the simple toggle (Section 3a, Option 1) for specific clients
+- ✅ Alternative: Use `any-client` or `grant-type` conditions for realm-wide policies
+
+**GitHub Issue:** [#45740](https://github.com/keycloak/keycloak/issues/45740)
+
+See `KEYCLOAK_BUG_REPORT.md` for full details and steps to reproduce.
 
 ## Notes
 
