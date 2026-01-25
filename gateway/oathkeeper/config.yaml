@@ -24,7 +24,7 @@ authenticators:
       pre_authorization:
         enabled: true
         client_id: oathkeeper-introspector
-        client_secret: 34IM6xvNqqNd47sG4tIXn0CbORAMZxNK
+        client_secret: KDy2JGeXX4PMNTSRf9DBErfmxB8dS34V
         token_url: http://keycloak:8080/realms/demo/protocol/openid-connect/token
       introspection_request_headers:
         accept: application/jwt
