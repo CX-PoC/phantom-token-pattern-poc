@@ -1,28 +1,30 @@
+set windows-shell := ["powershell", "-Command"]
+
 # Network management
 net-up:
-  @docker network inspect phantom-net >/dev/null 2>&1 || docker network create phantom-net
+  -@docker network create phantom-net
   @echo "✓ Network phantom-net ready"
 
 net-down:
-  @docker network inspect phantom-net >/dev/null 2>&1 && docker network rm phantom-net || true
+  -@docker network rm phantom-net
   @echo "✓ Network phantom-net removed"
 
 # Keycloak stack
 keycloak-up: net-up
-  docker compose -f keycloak/compose.yml --project-name phantom-keycloak up -d
+  docker compose -f keycloak/compose.yml  up -d
   @echo "✓ Keycloak stack started"
 
 keycloak-down:
-  docker compose -f keycloak/compose.yml --project-name phantom-keycloak down
+  docker compose -f keycloak/compose.yml  down
   @echo "✓ Keycloak stack stopped"
 
 # Gateway stack
 gateway-up: net-up
-  docker compose -f gateway/compose.yml --project-name phantom-gateway up -d
+  docker compose -f gateway/compose.yml  up -d
   @echo "✓ Gateway stack started"
 
 gateway-down:
-  docker compose -f gateway/compose.yml --project-name phantom-gateway down
+  docker compose -f gateway/compose.yml  down
   @echo "✓ Gateway stack stopped"
 
 # Combined operations
@@ -34,14 +36,14 @@ down: gateway-down keycloak-down
 
 # Utility recipes
 logs-keycloak:
-  docker compose -f keycloak/compose.yml --project-name phantom-keycloak logs -f
+  docker compose -f keycloak/compose.yml  logs -f
 
 logs-gateway:
-  docker compose -f gateway/compose.yml --project-name phantom-gateway logs -f
+  docker compose -f gateway/compose.yml  logs -f
 
 ps:
   @echo "=== Keycloak stack ==="
-  @docker compose -f keycloak/compose.yml --project-name phantom-keycloak ps
+  @docker compose -f keycloak/compose.yml  ps
   @echo ""
   @echo "=== Gateway stack ==="
-  @docker compose -f gateway/compose.yml --project-name phantom-gateway ps
+  @docker compose -f gateway/compose.yml  ps

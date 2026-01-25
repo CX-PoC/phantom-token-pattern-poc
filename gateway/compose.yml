@@ -1,3 +1,5 @@
+name: phantom-gateway
+
 services:
   oathkeeper:
     image: oryd/oathkeeper:v25
