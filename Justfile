@@ -18,6 +18,9 @@ keycloak-down:
   docker compose -f keycloak/compose.yml  down
   @echo "✓ Keycloak stack stopped"
 
+keycloak-reboot: keycloak-down keycloak-up
+  @echo "✓ Keycloak stack rebooted"
+
 # Gateway stack
 gateway-up: net-up
   docker compose -f gateway/compose.yml  up -d
@@ -26,6 +29,9 @@ gateway-up: net-up
 gateway-down:
   docker compose -f gateway/compose.yml  down
   @echo "✓ Gateway stack stopped"
+
+gateway-reboot: gateway-down gateway-up
+  @echo "✓ Gateway stack rebooted"
 
 # Combined operations
 up: keycloak-up gateway-up
