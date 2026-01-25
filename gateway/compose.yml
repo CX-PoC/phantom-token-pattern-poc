@@ -1,0 +1,36 @@
+services:
+  oathkeeper:
+    image: oryd/oathkeeper:v25
+    command: ["serve", "--config", "/etc/oathkeeper/config.yaml"]
+    volumes:
+      - ../oathkeeper/config.yaml:/etc/oathkeeper/config.yaml:ro
+      - ../oathkeeper/rules.yaml:/etc/oathkeeper/rules.yaml:ro
+      - ../oathkeeper/jwks.json:/etc/oathkeeper/jwks.json:ro
+    ports:
+      - "4456:4456"
+    networks:
+      - phantom-net
+
+  envoy:
+    image: envoyproxy/envoy:v1.36-latest
+    command: ["envoy", "-c", "/etc/envoy/envoy.yaml", "--log-level", "info"]
+    volumes:
+      - ../envoy/envoy.yaml:/etc/envoy/envoy.yaml:ro
+    ports:
+      - "8080:8080"
+    depends_on:
+      - oathkeeper
+      - graphql-faker
+    networks:
+      - phantom-net
+
+  graphql-faker:
+    image: apisguru/graphql-faker:latest
+    ports:
+      - "9002:9002"
+    networks:
+      - phantom-net
+
+networks:
+  phantom-net:
+    external: true
