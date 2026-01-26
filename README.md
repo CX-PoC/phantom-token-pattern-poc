@@ -15,3 +15,5 @@ Problems:
 - authkeeper still has config issue
   - however, manual token introspection with curl on both localhost and LAN IP seems to work
   - confirmed that `wget` from the authkeeper container to keycloak container also works
+
+I think our biggest problem is we don't know what is authkeeper expecting in the request from envoy's ext_authz filter.
