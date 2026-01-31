@@ -86,6 +86,7 @@ This approach uses Keycloak 26's Client Policies to conditionally enforce lightw
 - Clients → `Create client`.
 - Client ID: `oathkeeper-introspector`.
 - Enable `Client authentication` = ON; `Service accounts roles` = ON.
+- Client → `Advanced` tab → set **Support JWT claim in Introspection Response** to **ON**.
 - Save → Credentials tab: copy the `Client secret`.
 - Service accounts tab → Assign role → realm-management → add `view-clients` (and optionally `view-users` / `view-realm` or `uma_protection` to avoid 403 on introspection).
 - In `oathkeeper/config.yaml`, set:
@@ -93,7 +94,9 @@ This approach uses Keycloak 26's Client Policies to conditionally enforce lightw
   - `authenticators.oauth2_introspection.config.pre_authorization.client_secret` = `<CLIENT_SECRET>`
   - `authenticators.oauth2_introspection.config.pre_authorization.token_url` = `http://keycloak:8080/realms/demo/protocol/openid-connect/token`
   - `authenticators.oauth2_introspection.config.introspection_request_headers.accept` = `application/jwt`
-- Oathkeeper will use the client credentials flow to get a bearer token, then call introspection with `Accept: application/jwt` to receive Keycloak’s full JWT.
+- Oathkeeper will use the client credentials flow to get a bearer token, then call introspection with `Accept: application/jwt`.
+  - The response is still JSON; the **full JWT** is returned inside the `jwt` field.
+  - This setting must be enabled on the *introspecting client* (`oathkeeper-introspector`), not on the public client (`frontend`).
 
 ## 5) Test user
 
