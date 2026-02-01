@@ -19,6 +19,19 @@ access_rules:
 authenticators:
   oauth2_introspection:
     enabled: true
+    # Keep full config here so Oathkeeper's startup validation passes.
+    config:
+      introspection_url: http://keycloak:8080/realms/demo/protocol/openid-connect/token/introspect
+      pre_authorization:
+        enabled: false
+      token_from:
+        header: Authorization
+      introspection_request_headers:
+        accept: application/jwt
+        authorization: "Basic b2F0aGtlZXBlci1pbnRyb3NwZWN0b3I6S0R5MkpHZVhYNFBNTlRTUmY5REJFcmZteEI4ZFMzNFY="
+      cache:
+        enabled: false # debugging purposes; set to true in production
+        ttl: 20s
 
 authorizers:
   allow:
@@ -29,6 +42,10 @@ mutators:
     enabled: false
   header:
     enabled: true
+    # Keep full config here so Oathkeeper's startup validation passes.
+    config:
+      headers:
+        Authorization: "Bearer {{ .Extra.jwt }}"
 
 errors:
   fallback:

@@ -12,24 +12,7 @@
   authenticators:
     # match the one defined in config.yaml
     - handler: oauth2_introspection
-      config:
-        introspection_url: http://keycloak:8080/realms/demo/protocol/openid-connect/token/introspect
-        pre_authorization:
-          enabled: true
-          client_id: oathkeeper-introspector
-          client_secret: KDy2JGeXX4PMNTSRf9DBErfmxB8dS34V
-          token_url: http://keycloak:8080/realms/demo/protocol/openid-connect/token
-        token_from:
-          header: Authorization
-        introspection_request_headers:
-          accept: application/jwt
-        cache:
-          enabled: false # debugging purposes; set to true in production
-          ttl: 20s
   authorizer:
     handler: allow
   mutators:
     - handler: header
-      config:
-        headers:
-          Authorization: "Bearer {{ .Extra.jwt }}"

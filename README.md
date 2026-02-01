@@ -12,6 +12,7 @@ Based on:
 Problems:
 
 - Need to stop hardcoding `client_secret` in Oathkeeper config/rules; check if it can be injected via env vars or templated at container start.
+- Clarify whether Keycloak supports bearer-token auth for the introspection endpoint; current flow fails with bearer, so we use Basic auth for now.
 
 - authkeeper still has config issue
   - however, manual token introspection with curl on both localhost and LAN IP seems to work
