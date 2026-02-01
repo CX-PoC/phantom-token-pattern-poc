@@ -2,7 +2,7 @@ name: phantom-keycloak
 
 services:
   keycloak:
-    image: quay.io/keycloak/keycloak:26.4
+    image: quay.io/keycloak/keycloak:latest
     command: >
       start-dev
       --http-port=8080
