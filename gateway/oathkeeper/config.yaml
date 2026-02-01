@@ -27,7 +27,7 @@ authenticators:
       token_from:
         header: Authorization
       introspection_request_headers:
-        accept: application/jwt
+        accept: application/jwt # Keycloak can reply full JWT in the introspection response's "jwt" field
         authorization: "Basic b2F0aGtlZXBlci1pbnRyb3NwZWN0b3I6S0R5MkpHZVhYNFBNTlRTUmY5REJFcmZteEI4ZFMzNFY="
       cache:
         enabled: false # debugging purposes; set to true in production
@@ -45,7 +45,7 @@ mutators:
     # Keep full config here so Oathkeeper's startup validation passes.
     config:
       headers:
-        Authorization: "Bearer {{ .Extra.jwt }}"
+        Authorization: "Bearer {{ .Extra.jwt }}" # get the full JWT from introspection response's "jwt" field
 
 errors:
   fallback:
