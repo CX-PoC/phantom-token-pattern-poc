@@ -11,6 +11,7 @@ Based on:
 
 Problems:
 
+- Need to stop hardcoding `client_secret` in Oathkeeper config/rules; check if it can be injected via env vars or templated at container start.
 
 - authkeeper still has config issue
   - however, manual token introspection with curl on both localhost and LAN IP seems to work

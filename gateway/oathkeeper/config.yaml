@@ -19,18 +19,6 @@ access_rules:
 authenticators:
   oauth2_introspection:
     enabled: true
-    config:
-      introspection_url: http://keycloak:8080/realms/demo/protocol/openid-connect/token/introspect
-      pre_authorization:
-        enabled: true
-        client_id: oathkeeper-introspector
-        client_secret: KDy2JGeXX4PMNTSRf9DBErfmxB8dS34V
-        token_url: http://keycloak:8080/realms/demo/protocol/openid-connect/token
-      introspection_request_headers:
-        accept: application/jwt
-      cache:
-        enabled: false # debugging purposes; set to true in production
-        ttl: 20s
 
 authorizers:
   allow:
@@ -38,21 +26,9 @@ authorizers:
 
 mutators:
   id_token:
-    enabled: true
-    config:
-      issuer_url: http://oathkeeper:4456/
-      jwks_url: file:///etc/oathkeeper/jwks.json
-      ttl: 30s
-      # Phantom access token audience your backend might check
-      claims: >
-        {
-          "aud": ["graphql-backend"],
-          "preferred_username": "{{ .Extra.preferred_username }}",
-          "scope": "{{ .Extra.scope }}"
-        }
-      
-  header:
     enabled: false
+  header:
+    enabled: true
 
 errors:
   fallback:

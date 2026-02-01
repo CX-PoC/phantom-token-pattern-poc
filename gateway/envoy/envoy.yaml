@@ -28,7 +28,7 @@ static_resources:
                       transport_api_version: V3
                       allowed_headers:
                         patterns:
-                          - exact: Authorization
+                          - exact: authorization
                           - exact: x-request-id
                       with_request_body:
                         max_request_bytes: 8192
@@ -43,9 +43,7 @@ static_resources:
                         authorization_response:
                           allowed_upstream_headers:
                             patterns:
-                              - exact: Authorization   # Phantom token
-                              - exact: x-user-id      # Option B
-                              - exact: x-user-roles   # Option B
+                              - exact: authorization   # Phantom token
                   - name: envoy.filters.http.router
                     typed_config:
                       "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
